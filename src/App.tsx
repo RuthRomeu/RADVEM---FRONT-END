@@ -1,126 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import React, { useMemo, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+
+import { detectionLimit, pollIntervalMs, useDetections } from "./hooks/useDetections";
+import type { Detection } from "./services/detections";
 
 type View = "overview" | "map";
-
-type Detection = {
-  eventId: string;
-  timestamp: number;
-  angleDegrees: number;
-  distanceMeters: number;
-  xMeters: number;
-  yMeters: number;
-};
-
-type ApiDetection = {
-  event_id: string;
-  timestamp: number | string;
-  angle_degrees: number;
-  distance_cm: number;
-  x_cm: number;
-  y_cm: number;
-};
-
-type DetectionsResponse = { detections: ApiDetection[]; total: number };
-
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || "https://r5n6ko20ii.execute-api.us-east-2.amazonaws.com").replace(/\/$/, "");
-const pollIntervalMs = Number(import.meta.env.VITE_DETECTIONS_POLL_INTERVAL_MS) || 5000;
-const detectionLimit = 50;
 const radarPointLimit = 20;
-
-function toDetection(item: ApiDetection): Detection {
-  const timestamp = typeof item.timestamp === "number" ? item.timestamp : Number(item.timestamp) || Date.parse(item.timestamp);
-  return {
-    eventId: item.event_id,
-    timestamp,
-    angleDegrees: item.angle_degrees,
-    distanceMeters: item.distance_cm / 100,
-    xMeters: item.x_cm / 100,
-    yMeters: item.y_cm / 100,
-  };
-}
-
-function useDetections() {
-  const [detections, setDetections] = useState<Detection[]>([]);
-  const [newDetectionIds, setNewDetectionIds] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
-  const knownIdsRef = useRef<Set<string> | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timeoutId = 0;
-    let controller: AbortController | undefined;
-    const fadeTimeouts = new Set<number>();
-
-    const schedulePoll = () => {
-      timeoutId = window.setTimeout(poll, pollIntervalMs);
-    };
-
-    const poll = async () => {
-      if (document.visibilityState === "hidden") {
-        schedulePoll();
-        return;
-      }
-      controller = new AbortController();
-      try {
-        const response = await fetch(`${apiBaseUrl}/detections/latest?limit=${detectionLimit}`, {
-          signal: controller.signal,
-          cache: "no-store",
-        });
-        if (!response.ok) throw new Error(`A API respondeu com HTTP ${response.status}.`);
-        const payload = await response.json() as DetectionsResponse;
-        if (!Array.isArray(payload.detections)) throw new Error("A resposta da API não contém uma lista de detecções.");
-
-        const latest = payload.detections.map(toDetection);
-        const previousIds = knownIdsRef.current;
-        const arrivals = previousIds ? latest.filter((item) => !previousIds.has(item.eventId)).map((item) => item.eventId) : [];
-        knownIdsRef.current = new Set(latest.map((item) => item.eventId));
-
-        if (!cancelled) {
-          setDetections(latest);
-          setNewDetectionIds(arrivals);
-          setError(null);
-          setLastUpdatedAt(Date.now());
-          setIsLoading(false);
-          if (arrivals.length) {
-            const fadeTimeout = window.setTimeout(() => {
-              setNewDetectionIds((current) => current.filter((id) => !arrivals.includes(id)));
-              fadeTimeouts.delete(fadeTimeout);
-            }, 2800);
-            fadeTimeouts.add(fadeTimeout);
-          }
-        }
-      } catch (fetchError) {
-        if (!cancelled && !(fetchError instanceof DOMException && fetchError.name === "AbortError")) {
-          setError(fetchError instanceof Error ? fetchError.message : "Não foi possível consultar a API.");
-          setIsLoading(false);
-        }
-      } finally {
-        if (!cancelled) schedulePoll();
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        window.clearTimeout(timeoutId);
-        void poll();
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    void poll();
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      window.clearTimeout(timeoutId);
-      fadeTimeouts.forEach((id) => window.clearTimeout(id));
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
-
-  return { detections, newDetectionIds, error, isLoading, lastUpdatedAt };
-}
 
 function formatTimestamp(timestamp: number) {
   if (!Number.isFinite(timestamp)) return "—";
@@ -260,7 +144,7 @@ function Overview({ detections, error, isLoading, onOpenMap }: { detections: Det
               ))}</tbody>
             </table>
             {isLoading && <div className="table-message">Carregando detecções…</div>}
-            {!isLoading && error && <div className="table-message error-message">Não foi possível carregar as detecções. {error}</div>}
+            {!isLoading && error && <div className="table-message error-message">{detections.length ? "Não foi possível atualizar; exibindo os últimos dados recebidos. " : "Não foi possível carregar as detecções. "}{error}</div>}
             {!isLoading && !error && filteredDetections.length === 0 && <div className="table-message">{search ? "Nenhuma detecção corresponde à busca." : "A API ainda não recebeu detecções."}</div>}
           </div>
           <div className="table-footer"><span>Exibindo {filteredDetections.length} de {detections.length} registros recentes</span><span>Limite por consulta: {detectionLimit}</span></div>
@@ -332,10 +216,10 @@ function MapView({ detections, newDetectionIds, error, isLoading, lastUpdatedAt 
   return (
     <>
       <Header title="Mapeamento em Tempo Real" eyebrow="LOCALIZAÇÃO ESPACIAL">
-        <div className="live-badge"><span className={`status-dot ${error ? "offline" : ""}`} />{error ? "SEM CONEXÃO" : "CONSULTA ATIVA"}</div>
+        <div className="live-badge"><span className={`status-dot ${error ? "offline" : isLoading ? "pending" : ""}`} />{error ? "SEM CONEXÃO" : isLoading ? "CONECTANDO À API" : "CONSULTA ATIVA"}</div>
       </Header>
       <main className="content map-content">
-        <section className="filter-bar"><div><div className="filter-title">Detecções recentes</div><span className="panel-subtitle">{error ? `A consulta falhou: ${error}` : latestUpdate ? `Última consulta à API às ${latestUpdate}` : isLoading ? "Buscando detecções na API…" : "Aguardando a primeira consulta"}</span></div><span className="panel-subtitle">Atualização automática a cada {pollIntervalMs / 1000} segundos</span></section>
+        <section className="filter-bar"><div><div className="filter-title">Detecções recentes</div><span className="panel-subtitle">{error ? `${latestUpdate ? `Exibindo dados da consulta às ${latestUpdate}. ` : ""}A consulta falhou: ${error}` : latestUpdate ? `Última consulta à API às ${latestUpdate}` : isLoading ? "Buscando detecções na API…" : "Aguardando a primeira consulta"}</span></div><span className="panel-subtitle">Atualização automática a cada {pollIntervalMs / 1000} segundos</span></section>
         <section className="map-layout">
           <div className="panel map-panel">
             <div className="map-toolbar">
