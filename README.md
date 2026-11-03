@@ -26,3 +26,9 @@ O intervalo de atualização determina o atraso até o painel perceber uma nova 
 ## Verificações
 
 Execute `npm test`, `npx tsc --noEmit` e `npm run build`. O build gera os arquivos estáticos na pasta `dist`.
+
+## Publicação com AWS Amplify Hosting
+
+O arquivo `amplify.yml` prepara o build do front com Node.js 24, executa os testes e a checagem de tipos e publica os arquivos gerados em `dist`. Ao conectar o repositório ao Amplify, configure `VITE_API_BASE_URL` com a URL base da API e, se desejar outro intervalo de consulta, defina também `VITE_DETECTIONS_POLL_INTERVAL_MS`. A compilação informa um erro caso a URL da API não esteja configurada.
+
+O arquivo `.env.local` não é enviado ao Git nem ao Amplify. As variáveis devem ser configuradas no ambiente de build do Amplify e não devem conter credenciais. Confira a conexão com a API no endereço publicado após o deploy.
